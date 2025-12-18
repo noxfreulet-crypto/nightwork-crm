@@ -1,21 +1,318 @@
-```txt
+# ナイトワーク店舗向け顧客管理CRM
+
+マルチテナント対応のLINE公式アカウント連携CRM。Cloudflare D1 + Hono + TypeScriptで構築。
+
+## 🎯 主な機能
+
+### ✅ 実装済み
+
+- **マルチテナント**: 店舗ごとに完全分離されたデータ管理
+- **認証システム**: セッションベースの認証（Manager/Cast 2つのロール）
+- **LINE Webhook**: 署名検証、登録コード処理、メッセージ受信
+- **顧客管理**: CRUD、来店履歴、タグ、メモ
+- **登録コード**: キャスト別の時限付き登録コード生成
+- **ToDo自動生成**: Cloudflare Cron (7/14/30日フォローアップ)
+- **メッセージ送信**: テンプレート、変数置換、ガードレール（時間帯、頻度）
+- **テンプレート管理**: 店舗テンプレート/キャスト個人テンプレート
+- **ユーザー管理**: キャスト追加/無効化
+- **監査ログ**: アクション記録（スキーマのみ、ロジックは未実装）
+
+### 🚧 フロントエンド（基本のみ）
+
+- ログイン画面
+- ダッシュボード（ユーザー情報表示のみ）
+- APIドキュメント記載（実装は別途必要）
+
+## 📊 技術スタック
+
+- **Runtime**: Cloudflare Workers/Pages
+- **Framework**: Hono 4.x
+- **Database**: Cloudflare D1 (SQLite)
+- **ORM**: Drizzle ORM
+- **Authentication**: カスタムセッション管理
+- **Language**: TypeScript
+- **Cron**: Cloudflare Triggers
+
+## 🗄️ データベース
+
+### テーブル一覧
+
+- `stores` - 店舗
+- `users` - ユーザー (Manager/Cast)
+- `sessions` - セッション
+- `line_channels` - LINE公式アカウント設定
+- `customers` - 顧客
+- `visits` - 来店履歴
+- `todos` - 送信すべき顧客リスト
+- `templates` - メッセージテンプレート
+- `message_logs` - 送信ログ
+- `inbound_messages` - 受信メッセージ
+- `registration_codes` - 登録コード
+- `audit_logs` - 監査ログ
+- `todo_generation_rules` - ToDo生成ルール
+
+## 🚀 セットアップ
+
+### 1. 依存関係インストール
+
+```bash
 npm install
-npm run dev
 ```
 
-```txt
-npm run deploy
+### 2. ビルド
+
+```bash
+npm run build
 ```
 
-[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
+### 3. ローカル開発（重要な注意事項）
 
-```txt
-npm run cf-typegen
+**現在、ルーティング実装に問題があります。** 以下の修正が必要です：
+
+#### 問題点
+- `app.route()` のネスト構造が正しく動作しない
+- サブルートへのパス転送が複雑
+
+#### 解決策（推奨）
+すべてのルートを `src/index.tsx` に直接統合するか、以下のように修正：
+
+```typescript
+// 各ルートモジュールを直接マウント
+const db = createDb(c.env.DB);
+
+app.post('/api/auth/login', async (c) => {
+  // ロジックを直接記述
+});
+
+app.get('/api/customers', async (c) => {
+  // ロジックを直接記述
+});
 ```
 
-Pass the `CloudflareBindings` as generics when instantiation `Hono`:
+### 4. マイグレーション
 
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+ローカル開発用のD1データベースは、Wranglerが自動で `.wrangler/state/v3/d1/` 以下に作成します。
+
+```bash
+# 開発サーバーを起動（自動でローカルD1を初期化）
+npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
 ```
+
+初回起動後、別ターミナルでシードデータ投入：
+
+```bash
+npm run db:seed
+```
+
+### 5. テストアカウント
+
+```
+Manager: manager@example.com / password123
+Cast 1:  cast1@example.com / password123
+Cast 2:  cast2@example.com / password123
+```
+
+## 📡 API エンドポイント
+
+### 認証
+
+- `POST /api/auth/login` - ログイン
+- `POST /api/auth/logout` - ログアウト
+- `GET /api/auth/me` - 現在のユーザー取得
+
+### 顧客管理
+
+- `GET /api/customers` - 顧客一覧
+- `GET /api/customers/:id` - 顧客詳細
+- `PATCH /api/customers/:id` - 顧客更新
+- `POST /api/customers/:id/visits` - 来店登録
+- `GET /api/customers/:id/visits` - 来店履歴
+
+### 登録コード
+
+- `POST /api/registration-codes` - コード生成
+- `GET /api/registration-codes` - コード一覧
+- `GET /api/registration-codes/active` - 有効なコード
+
+### ToDo
+
+- `GET /api/todos` - ToDo一覧
+- `GET /api/todos/:id` - ToDo詳細
+- `PATCH /api/todos/:id` - ステータス更新
+- `GET /api/todos/today/list` - 今日のToDo
+
+### メッセージ
+
+- `POST /api/messages/send` - メッセージ送信
+- `POST /api/messages/draft` - テンプレートから下書き生成
+- `GET /api/messages/logs` - 送信履歴
+
+### テンプレート
+
+- `GET /api/templates` - テンプレート一覧
+- `POST /api/templates` - テンプレート作成
+- `PATCH /api/templates/:id` - テンプレート更新
+- `DELETE /api/templates/:id` - テンプレート削除
+
+### ユーザー管理（Managerのみ）
+
+- `GET /api/users` - ユーザー一覧
+- `GET /api/users/casts` - キャスト一覧
+- `POST /api/users` - ユーザー作成
+- `PATCH /api/users/:id` - ユーザー更新
+
+### Webhook
+
+- `POST /webhook/line` - LINE Webhook受信
+
+## 🔧 LINE公式アカウント設定
+
+### 1. LINE Developers
+
+1. [LINE Developers Console](https://developers.line.biz/) でプロバイダーを作成
+2. Messaging APIチャネルを作成
+3. 以下の情報を取得：
+   - Channel Access Token
+   - Channel Secret
+   - Bot User ID
+
+### 2. Webhook URL設定
+
+```
+https://your-domain.pages.dev/webhook/line
+```
+
+### 3. データベースにLINEチャネル登録
+
+```sql
+UPDATE line_channels 
+SET 
+  channel_access_token = 'YOUR_ACTUAL_TOKEN',
+  channel_secret = 'YOUR_ACTUAL_SECRET',
+  bot_user_id = 'YOUR_BOT_USER_ID'
+WHERE id = 'channel_001';
+```
+
+## ⏰ Cron設定
+
+毎日12:00にToDo自動生成：
+
+```jsonc
+// wrangler.jsonc
+{
+  "triggers": {
+    "crons": ["0 12 * * *"]
+  }
+}
+```
+
+## 🔐 セキュリティ
+
+- セッションクッキー: HttpOnly, Secure, SameSite=Lax
+- LINE署名検証: Web Crypto API使用
+- パスワード: bcrypt (rounds=10)
+- RBAC: Manager/Cast権限分離
+
+## 📝 TODOリスト
+
+### 高優先度
+
+1. **ルーティング修正**: `src/index.tsx`のルート定義を単純化
+2. **ミドルウェア適用**: 各APIルートに認証ミドルウェアを正しく適用
+3. **監査ログ実装**: CRUD操作時のログ記録
+4. **エラーハンドリング**: 統一されたエラーレスポンス
+5. **バリデーション**: リクエストボディのバリデーション
+
+### 中優先度
+
+1. **フロントエンド**: キャスト向けスマホUI
+   - 顧客一覧/検索
+   - 顧客詳細/編集
+   - 来店クイック登録
+   - ToDo一覧
+   - メッセージ送信
+   - 登録コード生成
+   
+2. **マネージャー画面**: PC向け管理画面
+   - ダッシュボード
+   - キャスト管理
+   - テンプレート管理
+   - ルール設定
+   - 送信ログ/監査ログ
+
+3. **テスト**: 単体テスト、統合テスト
+
+### 低優先度
+
+1. 誕生日ToDo
+2. タグ管理UI
+3. 統計/レポート機能
+4. 顧客担当移管機能
+5. メッセージテンプレート変数プレビュー
+
+## 🐛 既知の問題
+
+### 1. ルーティングエラー
+
+**症状**: Workers runtime起動時に `Cannot read properties of undefined (reading 'map')` エラー
+
+**原因**: `app.route()` のネストとサブルートへのパス転送
+
+**対策**: 
+- Option A: すべてのルートを`src/index.tsx`に直接記述
+- Option B: Honoの`basePath`を使った正しいマウント方法に変更
+
+### 2. D1マイグレーション
+
+**症状**: `wrangler d1 migrations apply` がwrangler.jsoncのbinding名を認識しない
+
+**対策**: Wranglerの自動スキーマ作成に依存（開発サーバー起動時）
+
+## 📚 参考資料
+
+- [Hono Documentation](https://hono.dev/)
+- [Cloudflare D1](https://developers.cloudflare.com/d1/)
+- [Drizzle ORM](https://orm.drizzle.team/)
+- [LINE Messaging API](https://developers.line.biz/ja/docs/messaging-api/)
+
+## 📄 ライセンス
+
+MIT License
+
+## 👥 開発者向けメモ
+
+### Cloudflare Workers制約
+
+- Node.js APIは使用不可（`fs`, `path`, `crypto`など）
+- Web標準API使用（Fetch API, Web Crypto API）
+- セッションストレージはD1データベース
+- ファイルアップロードは要R2 Bucket
+
+### Drizzle Tips
+
+- `better-sqlite3` はローカル開発のみ
+- 本番はCloudflare D1（自動で切り替わる）
+- マイグレーションは `drizzle-kit generate`
+
+### デバッグ
+
+```bash
+# PM2ログ
+pm2 logs nightwork-crm --nostream
+
+# Wranglerログ
+tail -f /home/user/.config/.wrangler/logs/wrangler-*.log
+```
+
+## 🎉 完成後の次のステップ
+
+1. ルーティング修正
+2. フロントエンドUIの実装
+3. 本番環境デプロイ (Cloudflare Pages)
+4. LINE公式アカウント連携テスト
+5. 実店舗でのベータテスト
+
+---
+
+**Status**: MVP Backend Completed (Routing Issue Needs Fix)
+**Last Updated**: 2025-12-18
