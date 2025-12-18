@@ -332,7 +332,7 @@ MIT License
 
 **開発環境URL**: https://3000-iu0p4q0d5txcplpamsul0-18e660f9.sandbox.novita.ai
 
-**プロジェクトバックアップ**: https://www.genspark.ai/api/files/s/bFd9WhAX
+**プロジェクトバックアップ (最新版)**: https://www.genspark.ai/api/files/s/41zXzb1p
 
 **テストアカウント**:
 - Cast 1: `cast1@example.com` / `password123`
@@ -350,7 +350,7 @@ Sandbox環境からCloudflareへの直接デプロイには、APIトークンの
 
 ### クイックスタート（ローカル環境で5分）
 
-1. **プロジェクトをダウンロード**: https://www.genspark.ai/api/files/s/bFd9WhAX
+1. **プロジェクトをダウンロード**: https://www.genspark.ai/api/files/s/41zXzb1p
 2. **展開**: `tar -xzf nightwork-crm-mvp-ready.tar.gz && cd home/user/webapp`
 3. **ログイン**: `npx wrangler login`
 4. **D1作成**: `npx wrangler d1 create webapp-production`
