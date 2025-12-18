@@ -343,7 +343,12 @@ MIT License
 
 ## 🚀 本番デプロイ
 
-### クイックスタート（5分でデプロイ）
+### ⚠️ 重要: デプロイ方法
+
+Sandbox環境からCloudflareへの直接デプロイには、APIトークンのIP制限により制約があります。
+**ローカル環境からのデプロイを推奨します。**
+
+### クイックスタート（ローカル環境で5分）
 
 1. **プロジェクトをダウンロード**: https://www.genspark.ai/api/files/s/bFd9WhAX
 2. **展開**: `tar -xzf nightwork-crm-mvp-ready.tar.gz && cd home/user/webapp`
@@ -352,7 +357,10 @@ MIT License
 5. **ID設定**: `wrangler.jsonc`の`database_id`を更新
 6. **デプロイ**: `./deploy.sh`
 
-詳細は **[QUICKSTART.md](QUICKSTART.md)** または **[DEPLOYMENT.md](DEPLOYMENT.md)** を参照してください。
+詳細は以下のドキュメントを参照：
+- **[DEPLOY_INSTRUCTIONS.md](DEPLOY_INSTRUCTIONS.md)** - 完全なステップバイステップガイド
+- **[QUICKSTART.md](QUICKSTART.md)** - クイックスタートガイド
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - 詳細なデプロイマニュアル
 
 ---
 
