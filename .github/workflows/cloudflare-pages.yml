@@ -1,0 +1,67 @@
+# GitHub Actions Workflow for Cloudflare Pages
+# このワークフローは参考用です。Cloudflare PagesのGitHub連携を使用する場合は不要です。
+# カスタムビルドプロセスが必要な場合にのみ使用してください。
+
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Cloudflare Pages
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
+      
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: webapp
+          directory: dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref_name }}
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Cloudflare Pagesへのデプロイが完了しました！\n\nプレビューURL: [こちら](https://preview-url.pages.dev)'
+            })
+
+# 注意事項:
+# 1. このワークフローを使用する場合、GitHubリポジトリのSecretsに以下を設定してください:
+#    - CLOUDFLARE_API_TOKEN: CloudflareのAPIトークン
+#    - CLOUDFLARE_ACCOUNT_ID: CloudflareのアカウントID
+# 
+# 2. Cloudflare PagesのGitHub連携を使用している場合、このファイルは不要です。
+#    重複デプロイを避けるため、このファイルを削除するか、ワークフローを無効化してください。
+#
+# 3. カスタムビルドステップが必要な場合（例: 環境変数の注入、追加のテスト実行など）、
+#    このワークフローをカスタマイズして使用できます。

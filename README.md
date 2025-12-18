@@ -348,7 +348,18 @@ MIT License
 Sandbox環境からCloudflareへの直接デプロイには、APIトークンのIP制限により制約があります。
 **ローカル環境からのデプロイを推奨します。**
 
-### クイックスタート（ローカル環境で5分）
+### デプロイ方法（2つの選択肢）
+
+#### 方法1: GitHub連携 + Cloudflare Pages自動デプロイ（推奨）
+
+1. **GitHubリポジトリ作成**
+2. **コードをプッシュ**: `git push origin main`
+3. **Cloudflare PagesでGitHub連携**
+4. **自動デプロイ完了！**
+
+詳細は **[GITHUB_DEPLOYMENT.md](GITHUB_DEPLOYMENT.md)** を参照
+
+#### 方法2: 手動デプロイ（Wrangler CLI）
 
 1. **プロジェクトをダウンロード**: https://www.genspark.ai/api/files/s/41zXzb1p
 2. **展開**: `tar -xzf nightwork-crm-mvp-ready.tar.gz && cd home/user/webapp`
@@ -357,7 +368,8 @@ Sandbox環境からCloudflareへの直接デプロイには、APIトークンの
 5. **ID設定**: `wrangler.jsonc`の`database_id`を更新
 6. **デプロイ**: `./deploy.sh`
 
-詳細は以下のドキュメントを参照：
+### 📚 ドキュメント一覧
+- **[GITHUB_DEPLOYMENT.md](GITHUB_DEPLOYMENT.md)** - GitHub連携とCI/CD設定（NEW!）
 - **[DEPLOY_INSTRUCTIONS.md](DEPLOY_INSTRUCTIONS.md)** - 完全なステップバイステップガイド
 - **[QUICKSTART.md](QUICKSTART.md)** - クイックスタートガイド
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - 詳細なデプロイマニュアル
