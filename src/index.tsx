@@ -2,24 +2,49 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { serveStatic } from 'hono/cloudflare-workers';
-import { createDb } from './db/client';
-import type { Variables } from './middleware/auth';
+import { getCookie, setCookie } from 'hono/cookie';
+import bcrypt from 'bcryptjs';
+import { eq, and, desc, isNull, gt, sql, or, like, gte, lt } from 'drizzle-orm';
 
-// Routes  
-import { createAuthRoutes } from './routes/auth';
-import { createWebhookRoutes } from './routes/webhook';
-import { createCustomersRoutes } from './routes/customers';
-import { createRegistrationCodesRoutes } from './routes/registration-codes';
-import { createTodosRoutes } from './routes/todos';
-import { createMessagesRoutes } from './routes/messages';
-import { createTemplatesRoutes } from './routes/templates';
-import { createUsersRoutes } from './routes/users';
+import { createDb, type DbClient } from './db/client';
+import { 
+  stores, users, sessions, customers, visits, todos, 
+  messageLogs, inboundMessages, templates, registrationCodes,
+  lineChannels, todoGenerationRules
+} from './db/schema';
 
-// Cron
+import { 
+  SESSION_COOKIE_NAME,
+  createSession,
+  validateSession,
+  invalidateSession,
+  createSessionCookie,
+  clearSessionCookie,
+  type SessionUser
+} from './lib/auth';
+
+import { 
+  generateId, 
+  generateRegistrationCode, 
+  verifyLineSignature,
+  replaceTemplateVariables,
+  isWithinAllowedSendingTime,
+  canSendMessage,
+  formatDate,
+  endOfDay,
+  daysAgo
+} from './lib/utils';
+
+import { LineMessagingClient } from './lib/line';
 import { generateTodosForAllStores } from './lib/cron-todo-generation';
 
 type Bindings = {
   DB: D1Database;
+};
+
+type Variables = {
+  user: SessionUser | null;
+  db: DbClient;
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -33,116 +58,807 @@ app.use('/api/*', cors());
 // 静的ファイル配信
 app.use('/static/*', serveStatic({ root: './public' }));
 
-// DBミドルウェア - すべてのルートでDBクライアントを利用可能にする
+// DBミドルウェア
 app.use('*', async (c, next) => {
-  const db = createDb(c.env.DB);
-  c.set('db', db);
+  c.set('db', createDb(c.env.DB));
   return next();
 });
 
-// Webhook Routes (認証不要)
-const webhookApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-webhookApp.use('*', async (c, next) => {
+// 認証ミドルウェア（APIルートのみ）
+app.use('/api/*', async (c, next) => {
   const db = c.get('db');
-  const routes = createWebhookRoutes(db);
-  // パスを調整してサブルートに渡す
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/webhook', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+  const sessionId = getCookie(c, SESSION_COOKIE_NAME);
+  
+  if (sessionId) {
+    const { user } = await validateSession(db, sessionId);
+    c.set('user', user);
+  } else {
+    c.set('user', null);
+  }
+  
+  return next();
 });
-app.route('/webhook', webhookApp);
 
-// Auth Routes
-const authApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-authApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createAuthRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/auth', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+// ===========================
+// 認証API
+// ===========================
+
+app.post('/api/auth/login', async (c) => {
+  try {
+    const db = c.get('db');
+    const { email, password } = await c.req.json();
+
+    if (!email || !password) {
+      return c.json({ error: 'Email and password are required' }, 400);
+    }
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    if (!user || !await bcrypt.compare(password, user.passwordHash) || !user.isActive) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+
+    const session = await createSession(db, user.id);
+    c.header('Set-Cookie', createSessionCookie(session.id));
+
+    return c.json({
+      user: {
+        id: user.id,
+        storeId: user.storeId,
+        email: user.email,
+        displayName: user.displayName,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/auth', authApp);
 
-// Customer Routes
-const customersApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-customersApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createCustomersRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/customers', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+app.post('/api/auth/logout', async (c) => {
+  try {
+    const db = c.get('db');
+    const sessionId = getCookie(c, SESSION_COOKIE_NAME);
+    
+    if (sessionId) {
+      await invalidateSession(db, sessionId);
+    }
+    
+    c.header('Set-Cookie', clearSessionCookie());
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Logout error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/customers', customersApp);
 
-// Registration Codes Routes
-const regCodesApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-regCodesApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createRegistrationCodesRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/registration-codes', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+app.get('/api/auth/me', async (c) => {
+  const user = c.get('user');
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+  return c.json({ user });
 });
-app.route('/api/registration-codes', regCodesApp);
 
-// Todos Routes
-const todosApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-todosApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createTodosRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/todos', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+// ===========================
+// 顧客API
+// ===========================
+
+app.get('/api/customers', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const query = c.req.query();
+    const search = query.search || '';
+    const limit = parseInt(query.limit || '50');
+    const offset = parseInt(query.offset || '0');
+
+    let conditions: any[] = [eq(customers.storeId, user.storeId)];
+
+    if (user.role === 'cast') {
+      conditions.push(eq(customers.assignedCastId, user.id));
+    }
+
+    if (search) {
+      conditions.push(
+        sql`(${customers.callName} LIKE ${`%${search}%`} OR ${customers.lineDisplayName} LIKE ${`%${search}%`})`
+      );
+    }
+
+    const results = await db
+      .select()
+      .from(customers)
+      .where(and(...conditions))
+      .orderBy(desc(customers.updatedAt))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({ customers: results });
+  } catch (error) {
+    console.error('Get customers error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/todos', todosApp);
 
-// Messages Routes
-const messagesApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-messagesApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createMessagesRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/messages', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+app.get('/api/customers/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const customerId = c.req.param('id');
+
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.storeId, user.storeId)))
+      .limit(1);
+
+    if (!customer) {
+      return c.json({ error: 'Customer not found' }, 404);
+    }
+
+    if (user.role === 'cast' && customer.assignedCastId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const visitHistory = await db
+      .select()
+      .from(visits)
+      .where(eq(visits.customerId, customerId))
+      .orderBy(desc(visits.occurredAt))
+      .limit(20);
+
+    const inboundHistory = await db
+      .select()
+      .from(inboundMessages)
+      .where(eq(inboundMessages.customerId, customerId))
+      .orderBy(desc(inboundMessages.receivedAt))
+      .limit(20);
+
+    const sentHistory = await db
+      .select()
+      .from(messageLogs)
+      .where(eq(messageLogs.customerId, customerId))
+      .orderBy(desc(messageLogs.sentAt))
+      .limit(20);
+
+    return c.json({
+      customer,
+      visitHistory,
+      inboundHistory,
+      sentHistory,
+    });
+  } catch (error) {
+    console.error('Get customer error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/messages', messagesApp);
 
-// Templates Routes
-const templatesApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-templatesApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createTemplatesRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/templates', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+app.patch('/api/customers/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const customerId = c.req.param('id');
+    const body = await c.req.json();
+
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.storeId, user.storeId)))
+      .limit(1);
+
+    if (!customer) {
+      return c.json({ error: 'Customer not found' }, 404);
+    }
+
+    if (user.role === 'cast' && customer.assignedCastId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const updateData: any = { updatedAt: new Date() };
+    if (body.callName !== undefined) updateData.callName = body.callName;
+    if (body.notes !== undefined) updateData.notes = body.notes;
+    if (body.tags !== undefined) updateData.tags = JSON.stringify(body.tags);
+    if (body.assignedCastId !== undefined && user.role === 'manager') {
+      updateData.assignedCastId = body.assignedCastId;
+    }
+
+    await db.update(customers).set(updateData).where(eq(customers.id, customerId));
+
+    const [updated] = await db
+      .select()
+      .from(customers)
+      .where(eq(customers.id, customerId))
+      .limit(1);
+
+    return c.json({ customer: updated });
+  } catch (error) {
+    console.error('Update customer error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/templates', templatesApp);
 
-// Users Routes
-const usersApp = new Hono<{ Bindings: Bindings; Variables: Variables }>();
-usersApp.use('*', async (c, next) => {
-  const db = c.get('db');
-  const routes = createUsersRoutes(db);
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/users', '');
-  const req = new Request(url.toString(), c.req.raw);
-  return routes.fetch(req, c.env, c.executionCtx);
+app.post('/api/customers/:id/visits', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const customerId = c.req.param('id');
+    const body = await c.req.json();
+
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.storeId, user.storeId)))
+      .limit(1);
+
+    if (!customer) {
+      return c.json({ error: 'Customer not found' }, 404);
+    }
+
+    if (user.role === 'cast' && customer.assignedCastId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const occurredAt = body.occurredAt ? new Date(body.occurredAt) : new Date();
+    const visitId = generateId('visit');
+
+    await db.insert(visits).values({
+      id: visitId,
+      storeId: user.storeId,
+      customerId,
+      occurredAt,
+      approxSpend: body.approxSpend || null,
+      nominationType: body.nominationType || null,
+      memo: body.memo || null,
+      registeredByCastId: user.id,
+    });
+
+    await db
+      .update(customers)
+      .set({ lastVisitAt: occurredAt, updatedAt: new Date() })
+      .where(eq(customers.id, customerId));
+
+    const [visit] = await db.select().from(visits).where(eq(visits.id, visitId)).limit(1);
+    return c.json({ visit });
+  } catch (error) {
+    console.error('Create visit error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
-app.route('/api/users', usersApp);
 
+// ===========================
+// 登録コードAPI
+// ===========================
+
+app.post('/api/registration-codes', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const body = await c.req.json();
+    const expiresAt = body.expiresAt ? new Date(body.expiresAt) : endOfDay();
+    const code = generateRegistrationCode(6);
+    const codeId = generateId('code');
+
+    await db.insert(registrationCodes).values({
+      id: codeId,
+      storeId: user.storeId,
+      castId: user.id,
+      code,
+      expiresAt,
+    });
+
+    const [created] = await db
+      .select()
+      .from(registrationCodes)
+      .where(eq(registrationCodes.id, codeId))
+      .limit(1);
+
+    return c.json({ registrationCode: created });
+  } catch (error) {
+    console.error('Create registration code error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.get('/api/registration-codes', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const conditions: any[] = [eq(registrationCodes.storeId, user.storeId)];
+    
+    if (user.role === 'cast') {
+      conditions.push(eq(registrationCodes.castId, user.id));
+    }
+
+    const codes = await db
+      .select()
+      .from(registrationCodes)
+      .where(and(...conditions))
+      .orderBy(registrationCodes.createdAt);
+
+    return c.json({ registrationCodes: codes });
+  } catch (error) {
+    console.error('Get registration codes error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.get('/api/registration-codes/active', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const now = new Date();
+
+    const codes = await db
+      .select()
+      .from(registrationCodes)
+      .where(
+        and(
+          eq(registrationCodes.storeId, user.storeId),
+          eq(registrationCodes.castId, user.id),
+          isNull(registrationCodes.usedAt),
+          gt(registrationCodes.expiresAt, now)
+        )
+      )
+      .orderBy(registrationCodes.expiresAt);
+
+    return c.json({ registrationCodes: codes });
+  } catch (error) {
+    console.error('Get active codes error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
+// ToDoAPI
+// ===========================
+
+app.get('/api/todos', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const query = c.req.query();
+    const status = query.status || 'pending';
+    const limit = parseInt(query.limit || '50');
+    const offset = parseInt(query.offset || '0');
+
+    const conditions: any[] = [
+      eq(todos.storeId, user.storeId),
+      eq(todos.status, status as any),
+    ];
+
+    if (user.role === 'cast') {
+      conditions.push(eq(todos.castId, user.id));
+    }
+
+    const results = await db
+      .select({
+        todo: todos,
+        customer: customers,
+      })
+      .from(todos)
+      .leftJoin(customers, eq(todos.customerId, customers.id))
+      .where(and(...conditions))
+      .orderBy(desc(todos.dueDate))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({ 
+      todos: results.map(r => ({ ...r.todo, customer: r.customer }))
+    });
+  } catch (error) {
+    console.error('Get todos error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.patch('/api/todos/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const todoId = c.req.param('id');
+    const body = await c.req.json();
+
+    const [todo] = await db
+      .select()
+      .from(todos)
+      .where(and(eq(todos.id, todoId), eq(todos.storeId, user.storeId)))
+      .limit(1);
+
+    if (!todo) {
+      return c.json({ error: 'Todo not found' }, 404);
+    }
+
+    if (user.role === 'cast' && todo.castId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const updateData: any = { updatedAt: new Date() };
+    
+    if (body.status) {
+      updateData.status = body.status;
+      if (body.status === 'completed') {
+        updateData.completedAt = new Date();
+      }
+    }
+
+    await db.update(todos).set(updateData).where(eq(todos.id, todoId));
+
+    const [updated] = await db.select().from(todos).where(eq(todos.id, todoId)).limit(1);
+    return c.json({ todo: updated });
+  } catch (error) {
+    console.error('Update todo error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
+// メッセージAPI
+// ===========================
+
+app.post('/api/messages/send', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const { customerId, message, templateId } = await c.req.json();
+
+    if (!customerId || !message) {
+      return c.json({ error: 'Customer ID and message are required' }, 400);
+    }
+
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.storeId, user.storeId)))
+      .limit(1);
+
+    if (!customer) {
+      return c.json({ error: 'Customer not found' }, 404);
+    }
+
+    if (user.role === 'cast' && customer.assignedCastId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    if (customer.messagingStatus !== 'active') {
+      return c.json({ 
+        error: 'Cannot send message to inactive customer',
+        status: customer.messagingStatus 
+      }, 400);
+    }
+
+    const [store] = await db.select().from(stores).where(eq(stores.id, user.storeId)).limit(1);
+
+    if (!store) {
+      return c.json({ error: 'Store not found' }, 404);
+    }
+
+    if (!isWithinAllowedSendingTime(store.allowedSendingStartTime, store.allowedSendingEndTime)) {
+      return c.json({ 
+        error: 'Message sending is not allowed at this time',
+        allowedTime: `${store.allowedSendingStartTime} - ${store.allowedSendingEndTime}`
+      }, 400);
+    }
+
+    if (!canSendMessage(
+      customer.lastMessageSentAt ? new Date(customer.lastMessageSentAt) : null,
+      store.messagingFrequencyLimitHours
+    )) {
+      return c.json({ 
+        error: 'Message frequency limit exceeded',
+        limitHours: store.messagingFrequencyLimitHours
+      }, 429);
+    }
+
+    const [channel] = await db
+      .select()
+      .from(lineChannels)
+      .where(and(eq(lineChannels.storeId, user.storeId), eq(lineChannels.isActive, true)))
+      .limit(1);
+
+    if (!channel) {
+      return c.json({ error: 'LINE channel not configured' }, 404);
+    }
+
+    const lineClient = new LineMessagingClient(channel.channelAccessToken);
+    const result = await lineClient.pushMessage(customer.lineUserId, message);
+
+    const logId = generateId('log');
+    await db.insert(messageLogs).values({
+      id: logId,
+      storeId: user.storeId,
+      customerId,
+      castId: user.id,
+      templateId: templateId || null,
+      body: message,
+      status: result.success ? 'success' : 'failed',
+      apiResponse: JSON.stringify(result),
+      sentAt: new Date(),
+    });
+
+    if (result.success) {
+      await db
+        .update(customers)
+        .set({ lastMessageSentAt: new Date(), updatedAt: new Date() })
+        .where(eq(customers.id, customerId));
+    }
+
+    return c.json({ 
+      success: result.success,
+      messageLogId: logId,
+      error: result.error
+    });
+  } catch (error) {
+    console.error('Send message error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.post('/api/messages/draft', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const { customerId, templateId } = await c.req.json();
+
+    if (!customerId || !templateId) {
+      return c.json({ error: 'Customer ID and template ID are required' }, 400);
+    }
+
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.storeId, user.storeId)))
+      .limit(1);
+
+    if (!customer) {
+      return c.json({ error: 'Customer not found' }, 404);
+    }
+
+    const [template] = await db
+      .select()
+      .from(templates)
+      .where(and(eq(templates.id, templateId), eq(templates.storeId, user.storeId)))
+      .limit(1);
+
+    if (!template) {
+      return c.json({ error: 'Template not found' }, 404);
+    }
+
+    if (template.scope === 'cast' && template.ownerCastId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const [store] = await db.select().from(stores).where(eq(stores.id, user.storeId)).limit(1);
+
+    const draft = replaceTemplateVariables(template.body, {
+      callName: customer.callName || customer.lineDisplayName || 'お客様',
+      castName: user.displayName,
+      lastVisit: customer.lastVisitAt ? formatDate(new Date(customer.lastVisitAt)) : '前回',
+      storeName: store?.name || 'お店',
+    });
+
+    return c.json({ draft });
+  } catch (error) {
+    console.error('Create draft error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
+// テンプレートAPI
+// ===========================
+
+app.get('/api/templates', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+
+    const results = await db
+      .select()
+      .from(templates)
+      .where(
+        and(
+          eq(templates.storeId, user.storeId),
+          or(
+            eq(templates.scope, 'store'),
+            and(eq(templates.scope, 'cast'), eq(templates.ownerCastId, user.id))
+          )
+        )
+      )
+      .orderBy(templates.type, templates.title);
+
+    return c.json({ templates: results });
+  } catch (error) {
+    console.error('Get templates error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.post('/api/templates', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+    const { scope, type, title, body: templateBody } = await c.req.json();
+
+    if (!scope || !type || !title || !templateBody) {
+      return c.json({ error: 'All fields are required' }, 400);
+    }
+
+    if (scope === 'store' && user.role !== 'manager') {
+      return c.json({ error: 'Only managers can create store templates' }, 403);
+    }
+
+    const templateId = generateId('tmpl');
+    await db.insert(templates).values({
+      id: templateId,
+      storeId: user.storeId,
+      scope,
+      ownerCastId: scope === 'cast' ? user.id : null,
+      type,
+      title,
+      body: templateBody,
+    });
+
+    const [created] = await db
+      .select()
+      .from(templates)
+      .where(eq(templates.id, templateId))
+      .limit(1);
+
+    return c.json({ template: created });
+  } catch (error) {
+    console.error('Create template error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
+// ユーザー管理API
+// ===========================
+
+app.get('/api/users', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user || user.role !== 'manager') {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    
+    const db = c.get('db');
+
+    const allUsers = await db
+      .select({
+        id: users.id,
+        storeId: users.storeId,
+        email: users.email,
+        displayName: users.displayName,
+        role: users.role,
+        isActive: users.isActive,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .where(eq(users.storeId, user.storeId))
+      .orderBy(users.role, users.displayName);
+
+    return c.json({ users: allUsers });
+  } catch (error) {
+    console.error('Get users error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.get('/api/users/casts', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+    
+    const db = c.get('db');
+
+    const casts = await db
+      .select({
+        id: users.id,
+        displayName: users.displayName,
+        isActive: users.isActive,
+      })
+      .from(users)
+      .where(and(eq(users.storeId, user.storeId), eq(users.role, 'cast')))
+      .orderBy(users.displayName);
+
+    return c.json({ casts });
+  } catch (error) {
+    console.error('Get casts error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
+// LINE Webhook
+// ===========================
+
+app.post('/webhook/line', async (c) => {
+  try {
+    const db = c.get('db');
+    const signature = c.req.header('x-line-signature');
+    
+    if (!signature) {
+      return c.json({ error: 'Missing signature' }, 401);
+    }
+
+    const bodyText = await c.req.text();
+    const body = JSON.parse(bodyText);
+
+    const destination = body.destination;
+    if (!destination) {
+      return c.json({ error: 'Missing destination' }, 400);
+    }
+
+    const [channel] = await db
+      .select()
+      .from(lineChannels)
+      .where(eq(lineChannels.botUserId, destination))
+      .limit(1);
+
+    if (!channel) {
+      console.error('Channel not found for destination:', destination);
+      return c.json({ error: 'Channel not found' }, 404);
+    }
+
+    const isValid = await verifyLineSignature(bodyText, signature, channel.channelSecret);
+    if (!isValid) {
+      return c.json({ error: 'Invalid signature' }, 401);
+    }
+
+    // イベント処理（簡略版 - 実際の処理はwebhook.tsを参照）
+    console.log('LINE webhook received:', body);
+
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Webhook error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ===========================
 // ヘルスチェック
+// ===========================
+
 app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ホームページ
+// ===========================
+// フロントエンド
+// ===========================
+
 app.get('/', (c) => {
   return c.html(`
     <!DOCTYPE html>
@@ -198,6 +914,10 @@ app.get('/', (c) => {
                             ログイン
                         </button>
                     </form>
+                    
+                    <div class="text-center text-sm text-gray-500">
+                        <p>テスト: cast1@example.com / password123</p>
+                    </div>
                 </div>
                 
                 <div class="text-center text-sm text-gray-400">
@@ -225,7 +945,6 @@ app.get('/', (c) => {
                         password
                     });
                     
-                    // ログイン成功後、ダッシュボードへリダイレクト
                     window.location.href = '/dashboard';
                 } catch (error) {
                     errorDiv.textContent = error.response?.data?.error || 'ログインに失敗しました';
@@ -238,7 +957,6 @@ app.get('/', (c) => {
   `);
 });
 
-// ダッシュボード（簡易版）
 app.get('/dashboard', (c) => {
   return c.html(`
     <!DOCTYPE html>
@@ -252,7 +970,6 @@ app.get('/dashboard', (c) => {
     </head>
     <body class="bg-gray-900 text-white">
         <div class="min-h-screen">
-            <!-- Header -->
             <header class="bg-gray-800 border-b border-gray-700 p-4">
                 <div class="flex justify-between items-center">
                     <h1 class="text-xl font-bold">
@@ -266,41 +983,34 @@ app.get('/dashboard', (c) => {
                 </div>
             </header>
             
-            <!-- Main Content -->
             <main class="p-4 max-w-7xl mx-auto">
                 <div id="loading" class="text-center py-8">
                     <i class="fas fa-spinner fa-spin text-3xl"></i>
                 </div>
                 
                 <div id="content" class="hidden space-y-6">
-                    <!-- User Info -->
                     <div class="bg-gray-800 rounded-lg p-6">
                         <h2 class="text-lg font-semibold mb-4">ユーザー情報</h2>
                         <div id="user-info" class="space-y-2"></div>
                     </div>
                     
-                    <!-- Quick Actions -->
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div class="bg-blue-600 hover:bg-blue-700 rounded-lg p-6 text-center transition cursor-pointer">
+                        <a href="/customers" class="bg-blue-600 hover:bg-blue-700 rounded-lg p-6 text-center transition block">
                             <i class="fas fa-users text-3xl mb-2"></i>
                             <div class="font-semibold">顧客一覧</div>
-                            <div class="text-sm text-gray-200">Coming Soon</div>
-                        </div>
+                        </a>
                         
-                        <div class="bg-green-600 hover:bg-green-700 rounded-lg p-6 text-center transition cursor-pointer">
+                        <a href="/todos" class="bg-green-600 hover:bg-green-700 rounded-lg p-6 text-center transition block">
                             <i class="fas fa-tasks text-3xl mb-2"></i>
                             <div class="font-semibold">今日のToDo</div>
-                            <div class="text-sm text-gray-200">Coming Soon</div>
-                        </div>
+                        </a>
                         
-                        <div class="bg-purple-600 hover:bg-purple-700 rounded-lg p-6 text-center transition cursor-pointer">
+                        <a href="/registration-codes" class="bg-purple-600 hover:bg-purple-700 rounded-lg p-6 text-center transition block">
                             <i class="fas fa-qrcode text-3xl mb-2"></i>
                             <div class="font-semibold">登録コード</div>
-                            <div class="text-sm text-gray-200">Coming Soon</div>
-                        </div>
+                        </a>
                     </div>
                     
-                    <!-- API Status -->
                     <div class="bg-gray-800 rounded-lg p-6">
                         <h2 class="text-lg font-semibold mb-4">システム状態</h2>
                         <div class="text-green-400">
@@ -328,7 +1038,6 @@ app.get('/dashboard', (c) => {
                     document.getElementById('loading').classList.add('hidden');
                     document.getElementById('content').classList.remove('hidden');
                 } catch (error) {
-                    // 未認証の場合はログインページへ
                     window.location.href = '/';
                 }
             }
@@ -354,7 +1063,6 @@ export default app;
 // Cloudflare Cron Trigger
 export const scheduled: ExportedHandler<Bindings>['scheduled'] = async (event, env, ctx) => {
   console.log('[Scheduled] Cron trigger started:', new Date().toISOString());
-  
   const db = createDb(env.DB);
   
   try {
