@@ -66,12 +66,49 @@ app.use('*', async (c, next) => {
 
 // 認証ミドルウェア（APIルートのみ）
 app.use('/api/*', async (c, next) => {
-  const db = c.get('db');
+  const d1 = c.env.DB;
   const sessionId = getCookie(c, SESSION_COOKIE_NAME);
   
   if (sessionId) {
-    const { user } = await validateSession(db, sessionId);
-    c.set('user', user);
+    try {
+      // セッション検証（生SQL）
+      const session = await d1.prepare('SELECT * FROM sessions WHERE id = ? LIMIT 1')
+        .bind(sessionId)
+        .first();
+
+      if (session) {
+        const expiresAt = new Date((session.expires_at as number) * 1000);
+        
+        if (expiresAt > new Date()) {
+          // ユーザー取得
+          const userResult = await d1.prepare('SELECT * FROM users WHERE id = ? LIMIT 1')
+            .bind(session.user_id)
+            .first();
+
+          if (userResult && userResult.is_active) {
+            c.set('user', {
+              id: userResult.id as string,
+              storeId: userResult.store_id as string,
+              email: userResult.email as string,
+              displayName: userResult.display_name as string,
+              role: userResult.role as 'manager' | 'cast',
+              isActive: userResult.is_active as boolean,
+            });
+          } else {
+            c.set('user', null);
+          }
+        } else {
+          // セッション期限切れ
+          await d1.prepare('DELETE FROM sessions WHERE id = ?').bind(sessionId).run();
+          c.set('user', null);
+        }
+      } else {
+        c.set('user', null);
+      }
+    } catch (error) {
+      console.error('Auth middleware error:', error);
+      c.set('user', null);
+    }
   } else {
     c.set('user', null);
   }
@@ -85,48 +122,83 @@ app.use('/api/*', async (c, next) => {
 
 app.post('/api/auth/login', async (c) => {
   try {
-    const db = c.get('db');
-    const { email, password } = await c.req.json();
+    console.log('[Login] Starting login attempt...');
+    const d1 = c.env.DB;
+    const body = await c.req.json();
+    const { email, password } = body;
+    
+    console.log('[Login] Email:', email);
 
     if (!email || !password) {
+      console.log('[Login] Missing email or password');
       return c.json({ error: 'Email and password are required' }, 400);
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
+    // 生SQLでユーザー検索
+    console.log('[Login] Querying database...');
+    const result = await d1.prepare('SELECT * FROM users WHERE email = ? LIMIT 1')
+      .bind(email)
+      .first();
 
-    if (!user || !await bcrypt.compare(password, user.passwordHash) || !user.isActive) {
+    console.log('[Login] Query result:', result ? 'Found' : 'Not found');
+
+    if (!result) {
+      console.log('[Login] User not found');
       return c.json({ error: 'Invalid credentials' }, 401);
     }
 
-    const session = await createSession(db, user.id);
-    c.header('Set-Cookie', createSessionCookie(session.id));
+    // パスワード検証
+    console.log('[Login] Verifying password...');
+    const validPassword = await bcrypt.compare(password, result.password_hash as string);
+    console.log('[Login] Password valid:', validPassword);
+    
+    if (!validPassword) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
 
+    // アクティブチェック
+    if (!result.is_active) {
+      console.log('[Login] Account inactive');
+      return c.json({ error: 'Account is inactive' }, 403);
+    }
+
+    // セッション作成（生SQL）
+    console.log('[Login] Creating session...');
+    const sessionId = generateId('sess');
+    const expiresAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60); // 30 days
+
+    await d1.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)')
+      .bind(sessionId, result.id, expiresAt)
+      .run();
+
+    console.log('[Login] Session created:', sessionId);
+
+    c.header('Set-Cookie', createSessionCookie(sessionId));
+
+    console.log('[Login] Login successful');
     return c.json({
       user: {
-        id: user.id,
-        storeId: user.storeId,
-        email: user.email,
-        displayName: user.displayName,
-        role: user.role,
+        id: result.id,
+        storeId: result.store_id,
+        email: result.email,
+        displayName: result.display_name,
+        role: result.role,
       },
     });
   } catch (error) {
-    console.error('Login error:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    console.error('[Login] Error:', error);
+    console.error('[Login] Error stack:', error instanceof Error ? error.stack : 'No stack');
+    return c.json({ error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown' }, 500);
   }
 });
 
 app.post('/api/auth/logout', async (c) => {
   try {
-    const db = c.get('db');
+    const d1 = c.env.DB;
     const sessionId = getCookie(c, SESSION_COOKIE_NAME);
     
     if (sessionId) {
-      await invalidateSession(db, sessionId);
+      await d1.prepare('DELETE FROM sessions WHERE id = ?').bind(sessionId).run();
     }
     
     c.header('Set-Cookie', clearSessionCookie());
