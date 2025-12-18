@@ -697,18 +697,15 @@ function handleTodoClick(todoId) {
 }
 
 function handleAddVisit(customerId) {
-  // TODO: Implement visit registration modal
-  alert('来店登録機能は実装中です');
+  showVisitModal(customerId);
 }
 
 function handleSendMessage(customerId, todoId = null) {
-  // TODO: Implement message sending modal
-  alert('メッセージ送信機能は実装中です');
+  showMessageModal(customerId, todoId);
 }
 
 function handleEditCustomer(customerId) {
-  // TODO: Implement customer edit modal
-  alert('顧客編集機能は実装中です');
+  showEditCustomerModal(customerId);
 }
 
 async function handleGenerateCode() {
@@ -771,6 +768,437 @@ async function loadActiveCodes() {
     `).join('');
   } catch (error) {
     console.error('Failed to load active codes:', error);
+  }
+}
+
+// ========================================
+// Modal Functions
+// ========================================
+
+function showVisitModal(customerId) {
+  const customer = AppState.customers.find(c => c.id === customerId);
+  if (!customer) return;
+  
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm format
+  
+  const modalHTML = `
+    <div id="visitModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full max-h-screen overflow-y-auto">
+        <div class="sticky top-0 bg-pink-500 text-white p-4 rounded-t-lg">
+          <div class="flex items-center justify-between">
+            <h2 class="text-xl font-bold">
+              <i class="fas fa-calendar-plus mr-2"></i>来店登録
+            </h2>
+            <button onclick="closeVisitModal()" class="text-white hover:text-pink-200">
+              <i class="fas fa-times text-2xl"></i>
+            </button>
+          </div>
+          <p class="text-pink-100 text-sm mt-1">${customer.callName || customer.lineDisplayName}</p>
+        </div>
+        
+        <form id="visitForm" class="p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="far fa-calendar mr-1"></i>来店日時 <span class="text-red-500">*</span>
+            </label>
+            <input 
+              type="datetime-local" 
+              id="visitDateTime"
+              value="${dateStr}"
+              max="${dateStr}"
+              required
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-yen-sign mr-1"></i>売上金額
+            </label>
+            <input 
+              type="number" 
+              id="visitSpend"
+              min="0"
+              step="1000"
+              placeholder="0"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">任意：金額を入力しない場合は0円として記録されます</p>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-heart mr-1"></i>指名タイプ
+            </label>
+            <select 
+              id="visitNomination"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            >
+              <option value="none">なし</option>
+              <option value="honshimei">本指名</option>
+              <option value="shinshimei">新規指名</option>
+              <option value="douhan">同伴</option>
+            </select>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-sticky-note mr-1"></i>メモ
+            </label>
+            <textarea 
+              id="visitMemo"
+              rows="3"
+              placeholder="来店時の様子や会話内容など..."
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            ></textarea>
+          </div>
+          
+          <div class="flex gap-3 pt-4">
+            <button 
+              type="button"
+              onclick="closeVisitModal()"
+              class="flex-1 bg-gray-300 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-400"
+            >
+              キャンセル
+            </button>
+            <button 
+              type="submit"
+              class="flex-1 bg-pink-500 text-white py-3 rounded-lg font-semibold hover:bg-pink-600"
+            >
+              <i class="fas fa-check mr-2"></i>登録
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+  document.getElementById('visitForm').addEventListener('submit', (e) => submitVisit(e, customerId));
+}
+
+function closeVisitModal() {
+  const modal = document.getElementById('visitModal');
+  if (modal) modal.remove();
+}
+
+async function submitVisit(e, customerId) {
+  e.preventDefault();
+  
+  const dateTime = document.getElementById('visitDateTime').value;
+  const spend = parseInt(document.getElementById('visitSpend').value) || 0;
+  const nomination = document.getElementById('visitNomination').value;
+  const memo = document.getElementById('visitMemo').value.trim();
+  
+  try {
+    await API.addVisit(customerId, {
+      visitedAt: new Date(dateTime).toISOString(),
+      spendAmount: spend,
+      nominationType: nomination,
+      memo: memo || null
+    });
+    
+    alert('来店を登録しました！');
+    closeVisitModal();
+    
+    // Reload customer data
+    const data = await API.getCustomer(customerId);
+    AppState.currentCustomer = data.customer;
+    
+    // Update customers list
+    const customersData = await API.getCustomers();
+    AppState.customers = customersData.customers || [];
+    
+    // Re-render current view
+    Router.navigate('customer-detail', { id: customerId });
+  } catch (error) {
+    alert('来店登録に失敗しました: ' + error.message);
+  }
+}
+
+function showMessageModal(customerId, todoId = null) {
+  const customer = AppState.customers.find(c => c.id === customerId);
+  if (!customer) return;
+  
+  const modalHTML = `
+    <div id="messageModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-screen overflow-y-auto">
+        <div class="sticky top-0 bg-pink-500 text-white p-4 rounded-t-lg">
+          <div class="flex items-center justify-between">
+            <h2 class="text-xl font-bold">
+              <i class="fas fa-paper-plane mr-2"></i>メッセージ送信
+            </h2>
+            <button onclick="closeMessageModal()" class="text-white hover:text-pink-200">
+              <i class="fas fa-times text-2xl"></i>
+            </button>
+          </div>
+          <p class="text-pink-100 text-sm mt-1">${customer.callName || customer.lineDisplayName}</p>
+        </div>
+        
+        <div class="p-6 space-y-4">
+          <!-- Template Selection -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-file-alt mr-1"></i>テンプレート選択
+            </label>
+            <select 
+              id="templateSelect"
+              onchange="handleTemplateSelect()"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            >
+              <option value="">-- テンプレートを選択 --</option>
+              ${AppState.templates.map(t => `
+                <option value="${t.id}">${t.name}</option>
+              `).join('')}
+            </select>
+          </div>
+          
+          <!-- Message Content -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-comment mr-1"></i>メッセージ内容 <span class="text-red-500">*</span>
+            </label>
+            <textarea 
+              id="messageContent"
+              rows="6"
+              required
+              placeholder="メッセージを入力してください..."
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            ></textarea>
+            <p class="text-xs text-gray-500 mt-1">
+              利用可能な変数: {castName}, {customerName}
+            </p>
+          </div>
+          
+          <!-- Guardrails Info -->
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
+            <p class="font-semibold text-blue-800 mb-1">
+              <i class="fas fa-shield-alt mr-1"></i>送信ルール
+            </p>
+            <ul class="text-blue-700 space-y-1 text-xs">
+              <li><i class="fas fa-clock mr-1"></i>送信可能時間: 10:00 - 23:00</li>
+              <li><i class="fas fa-ban mr-1"></i>同じ顧客への送信は24時間に1回まで</li>
+              <li><i class="fas fa-user-slash mr-1"></i>ブロック中の顧客には送信不可</li>
+            </ul>
+          </div>
+          
+          <div id="messageError" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+            <i class="fas fa-exclamation-circle mr-2"></i>
+            <span id="messageErrorText"></span>
+          </div>
+          
+          <div class="flex gap-3 pt-4">
+            <button 
+              type="button"
+              onclick="closeMessageModal()"
+              class="flex-1 bg-gray-300 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-400"
+            >
+              キャンセル
+            </button>
+            <button 
+              type="button"
+              onclick="submitMessage('${customerId}', ${todoId ? `'${todoId}'` : 'null'})"
+              class="flex-1 bg-pink-500 text-white py-3 rounded-lg font-semibold hover:bg-pink-600"
+            >
+              <i class="fas fa-paper-plane mr-2"></i>送信
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+function closeMessageModal() {
+  const modal = document.getElementById('messageModal');
+  if (modal) modal.remove();
+}
+
+function handleTemplateSelect() {
+  const templateId = document.getElementById('templateSelect').value;
+  if (!templateId) return;
+  
+  const template = AppState.templates.find(t => t.id === templateId);
+  if (template) {
+    document.getElementById('messageContent').value = template.content;
+  }
+}
+
+async function submitMessage(customerId, todoId) {
+  const content = document.getElementById('messageContent').value.trim();
+  const errorDiv = document.getElementById('messageError');
+  const errorText = document.getElementById('messageErrorText');
+  
+  if (!content) {
+    errorDiv.classList.remove('hidden');
+    errorText.textContent = 'メッセージを入力してください';
+    return;
+  }
+  
+  try {
+    errorDiv.classList.add('hidden');
+    
+    await API.sendMessage({
+      customerId,
+      message: content,
+      todoId
+    });
+    
+    alert('メッセージを送信しました！');
+    closeMessageModal();
+    
+    // Mark todo as completed if provided
+    if (todoId) {
+      await API.updateTodo(todoId, { status: 'completed' });
+      const todosData = await API.getTodos({ status: 'pending' });
+      AppState.todos = todosData.todos || [];
+    }
+    
+    // Re-render current view
+    if (AppState.currentView === 'cast-home') {
+      Router.navigate('cast-home');
+    }
+  } catch (error) {
+    errorDiv.classList.remove('hidden');
+    errorText.textContent = error.message || 'メッセージ送信に失敗しました';
+  }
+}
+
+function showEditCustomerModal(customerId) {
+  const customer = AppState.customers.find(c => c.id === customerId);
+  if (!customer) return;
+  
+  const modalHTML = `
+    <div id="editModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full max-h-screen overflow-y-auto">
+        <div class="sticky top-0 bg-pink-500 text-white p-4 rounded-t-lg">
+          <div class="flex items-center justify-between">
+            <h2 class="text-xl font-bold">
+              <i class="fas fa-edit mr-2"></i>顧客情報編集
+            </h2>
+            <button onclick="closeEditModal()" class="text-white hover:text-pink-200">
+              <i class="fas fa-times text-2xl"></i>
+            </button>
+          </div>
+        </div>
+        
+        <form id="editForm" class="p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-user mr-1"></i>LINE表示名
+            </label>
+            <input 
+              type="text" 
+              value="${customer.lineDisplayName}"
+              disabled
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-600"
+            />
+            <p class="text-xs text-gray-500 mt-1">LINE連携により自動取得（変更不可）</p>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-signature mr-1"></i>呼び名
+            </label>
+            <input 
+              type="text" 
+              id="editCallName"
+              value="${customer.callName || ''}"
+              placeholder="例: ○○ちゃん"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">お客様をどう呼ぶか（ニックネーム）</p>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-tags mr-1"></i>タグ
+            </label>
+            <input 
+              type="text" 
+              id="editTags"
+              value="${customer.tags ? customer.tags.join(', ') : ''}"
+              placeholder="例: VIP, 常連, 同伴"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">カンマ区切りで複数入力可能</p>
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              <i class="fas fa-sticky-note mr-1"></i>メモ
+            </label>
+            <textarea 
+              id="editMemo"
+              rows="4"
+              placeholder="お客様に関する情報やメモ..."
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            >${customer.memo || ''}</textarea>
+          </div>
+          
+          <div class="flex gap-3 pt-4">
+            <button 
+              type="button"
+              onclick="closeEditModal()"
+              class="flex-1 bg-gray-300 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-400"
+            >
+              キャンセル
+            </button>
+            <button 
+              type="submit"
+              class="flex-1 bg-pink-500 text-white py-3 rounded-lg font-semibold hover:bg-pink-600"
+            >
+              <i class="fas fa-save mr-2"></i>保存
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+  document.getElementById('editForm').addEventListener('submit', (e) => submitEditCustomer(e, customerId));
+}
+
+function closeEditModal() {
+  const modal = document.getElementById('editModal');
+  if (modal) modal.remove();
+}
+
+async function submitEditCustomer(e, customerId) {
+  e.preventDefault();
+  
+  const callName = document.getElementById('editCallName').value.trim();
+  const tagsStr = document.getElementById('editTags').value.trim();
+  const memo = document.getElementById('editMemo').value.trim();
+  
+  const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
+  
+  try {
+    await API.updateCustomer(customerId, {
+      callName: callName || null,
+      tags: tags.length > 0 ? tags : null,
+      memo: memo || null
+    });
+    
+    alert('顧客情報を更新しました！');
+    closeEditModal();
+    
+    // Reload customer data
+    const data = await API.getCustomer(customerId);
+    AppState.currentCustomer = data.customer;
+    
+    // Update customers list
+    const customersData = await API.getCustomers();
+    AppState.customers = customersData.customers || [];
+    
+    // Re-render current view
+    Router.navigate('customer-detail', { id: customerId });
+  } catch (error) {
+    alert('顧客情報の更新に失敗しました: ' + error.message);
   }
 }
 
