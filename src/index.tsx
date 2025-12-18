@@ -942,178 +942,162 @@ app.get('/', (c) => {
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     </head>
-    <body class="bg-gray-900 text-white">
-        <div class="min-h-screen flex items-center justify-center p-4">
-            <div class="max-w-md w-full space-y-8">
-                <div class="text-center">
-                    <h1 class="text-4xl font-bold mb-2">
-                        <i class="fas fa-users mr-2"></i>
-                        顧客管理CRM
-                    </h1>
-                    <p class="text-gray-400">ナイトワーク店舗向けLINE連携システム</p>
-                </div>
-                
-                <div class="bg-gray-800 rounded-lg p-8 space-y-6">
-                    <div id="error-message" class="hidden bg-red-500 text-white p-3 rounded"></div>
-                    
-                    <form id="login-form" class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium mb-2">メールアドレス</label>
-                            <input 
-                                type="email" 
-                                name="email" 
-                                required
-                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500"
-                                placeholder="email@example.com"
-                            />
-                        </div>
-                        
-                        <div>
-                            <label class="block text-sm font-medium mb-2">パスワード</label>
-                            <input 
-                                type="password" 
-                                name="password" 
-                                required
-                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500"
-                                placeholder="••••••••"
-                            />
-                        </div>
-                        
-                        <button 
-                            type="submit"
-                            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-lg transition"
-                        >
-                            ログイン
-                        </button>
-                    </form>
-                    
-                    <div class="text-center text-sm text-gray-500">
-                        <p>テスト: cast1@example.com / password123</p>
-                    </div>
-                </div>
-                
-                <div class="text-center text-sm text-gray-400">
-                    <p>キャスト・マネージャー専用システム</p>
-                </div>
+    <body class="bg-gray-50">
+        <div id="app">
+          <!-- App content will be rendered here by app.js -->
+          <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+              <i class="fas fa-spinner fa-spin text-4xl text-pink-500"></i>
+              <p class="mt-4 text-gray-600">読み込み中...</p>
             </div>
+          </div>
         </div>
         
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-        <script>
-            const form = document.getElementById('login-form');
-            const errorDiv = document.getElementById('error-message');
-            
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                errorDiv.classList.add('hidden');
-                
-                const formData = new FormData(form);
-                const email = formData.get('email');
-                const password = formData.get('password');
-                
-                try {
-                    const response = await axios.post('/api/auth/login', {
-                        email,
-                        password
-                    });
-                    
-                    window.location.href = '/dashboard';
-                } catch (error) {
-                    errorDiv.textContent = error.response?.data?.error || 'ログインに失敗しました';
-                    errorDiv.classList.remove('hidden');
-                }
-            });
-        </script>
+        <script src="/static/app.js"></script>
     </body>
     </html>
   `);
 });
 
-app.get('/dashboard', (c) => {
+// Removed: Dashboard route - SPA handles all routing
+
+// ===========================
+// 顧客一覧画面
+// ===========================
+
+app.get('/customers', (c) => {
   return c.html(`
     <!DOCTYPE html>
     <html lang="ja">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>ダッシュボード - CRM</title>
+        <title>顧客一覧 - CRM</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     </head>
-    <body class="bg-gray-900 text-white">
-        <div class="min-h-screen">
-            <header class="bg-gray-800 border-b border-gray-700 p-4">
-                <div class="flex justify-between items-center">
-                    <h1 class="text-xl font-bold">
-                        <i class="fas fa-users mr-2"></i>
-                        顧客管理CRM
-                    </h1>
-                    <button id="logout-btn" class="text-red-400 hover:text-red-300">
-                        <i class="fas fa-sign-out-alt mr-1"></i>
-                        ログアウト
-                    </button>
+    <body class="bg-gray-900 text-white min-h-screen">
+        <!-- Header -->
+        <header class="bg-gray-800 border-b border-gray-700 p-4 sticky top-0 z-10">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <a href="/dashboard" class="text-gray-400 hover:text-white">
+                        <i class="fas fa-arrow-left"></i>
+                    </a>
+                    <h1 class="text-xl font-bold">顧客一覧</h1>
                 </div>
-            </header>
-            
-            <main class="p-4 max-w-7xl mx-auto">
-                <div id="loading" class="text-center py-8">
-                    <i class="fas fa-spinner fa-spin text-3xl"></i>
-                </div>
-                
-                <div id="content" class="hidden space-y-6">
-                    <div class="bg-gray-800 rounded-lg p-6">
-                        <h2 class="text-lg font-semibold mb-4">ユーザー情報</h2>
-                        <div id="user-info" class="space-y-2"></div>
-                    </div>
-                    
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <a href="/customers" class="bg-blue-600 hover:bg-blue-700 rounded-lg p-6 text-center transition block">
-                            <i class="fas fa-users text-3xl mb-2"></i>
-                            <div class="font-semibold">顧客一覧</div>
-                        </a>
-                        
-                        <a href="/todos" class="bg-green-600 hover:bg-green-700 rounded-lg p-6 text-center transition block">
-                            <i class="fas fa-tasks text-3xl mb-2"></i>
-                            <div class="font-semibold">今日のToDo</div>
-                        </a>
-                        
-                        <a href="/registration-codes" class="bg-purple-600 hover:bg-purple-700 rounded-lg p-6 text-center transition block">
-                            <i class="fas fa-qrcode text-3xl mb-2"></i>
-                            <div class="font-semibold">登録コード</div>
-                        </a>
-                    </div>
-                    
-                    <div class="bg-gray-800 rounded-lg p-6">
-                        <h2 class="text-lg font-semibold mb-4">システム状態</h2>
-                        <div class="text-green-400">
-                            <i class="fas fa-check-circle mr-2"></i>
-                            正常稼働中
-                        </div>
-                    </div>
-                </div>
-            </main>
+                <button id="logout-btn" class="text-red-400 hover:text-red-300">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="p-4 bg-gray-800 border-b border-gray-700">
+            <div class="relative">
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="顧客を検索..."
+                    class="w-full px-4 py-3 pl-10 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 text-white"
+                />
+                <i class="fas fa-search absolute left-3 top-4 text-gray-400"></i>
+            </div>
         </div>
-        
+
+        <!-- Customer List -->
+        <main class="p-4">
+            <div id="loading" class="text-center py-8">
+                <i class="fas fa-spinner fa-spin text-3xl text-gray-400"></i>
+            </div>
+
+            <div id="no-customers" class="hidden text-center py-12">
+                <i class="fas fa-users text-5xl text-gray-600 mb-4"></i>
+                <p class="text-gray-400">顧客が見つかりませんでした</p>
+            </div>
+
+            <div id="customers-list" class="hidden space-y-3"></div>
+        </main>
+
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
         <script>
-            async function loadUserInfo() {
+            let allCustomers = [];
+
+            async function loadCustomers() {
                 try {
-                    const response = await axios.get('/api/auth/me');
-                    const user = response.data.user;
-                    
-                    document.getElementById('user-info').innerHTML = \`
-                        <div><strong>名前:</strong> \${user.displayName}</div>
-                        <div><strong>役割:</strong> \${user.role === 'manager' ? 'マネージャー' : 'キャスト'}</div>
-                        <div><strong>メール:</strong> \${user.email}</div>
-                    \`;
-                    
-                    document.getElementById('loading').classList.add('hidden');
-                    document.getElementById('content').classList.remove('hidden');
+                    const response = await axios.get('/api/customers?limit=100');
+                    allCustomers = response.data.customers;
+                    displayCustomers(allCustomers);
                 } catch (error) {
-                    window.location.href = '/';
+                    console.error('Load customers error:', error);
+                    if (error.response?.status === 401) {
+                        window.location.href = '/';
+                    }
                 }
             }
-            
+
+            function displayCustomers(customers) {
+                const loading = document.getElementById('loading');
+                const noCustomers = document.getElementById('no-customers');
+                const customersList = document.getElementById('customers-list');
+
+                loading.classList.add('hidden');
+
+                if (customers.length === 0) {
+                    noCustomers.classList.remove('hidden');
+                    customersList.classList.add('hidden');
+                    return;
+                }
+
+                noCustomers.classList.add('hidden');
+                customersList.classList.remove('hidden');
+
+                customersList.innerHTML = customers.map(customer => \`
+                    <a href="/customers/\${customer.id}" class="block bg-gray-800 rounded-lg p-4 hover:bg-gray-750 transition border border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div class="flex-1">
+                                <div class="flex items-center space-x-2 mb-1">
+                                    <h3 class="font-semibold text-lg">\${customer.call_name || customer.line_display_name || '名前なし'}</h3>
+                                    <span class="px-2 py-1 text-xs rounded-full \${
+                                        customer.messaging_status === 'active' ? 'bg-green-900 text-green-300' : 
+                                        customer.messaging_status === 'blocked' ? 'bg-red-900 text-red-300' : 
+                                        'bg-gray-700 text-gray-300'
+                                    }">
+                                        \${customer.messaging_status === 'active' ? 'アクティブ' : 
+                                          customer.messaging_status === 'blocked' ? 'ブロック中' : 
+                                          'フォロー解除'}
+                                    </span>
+                                </div>
+                                <p class="text-sm text-gray-400">
+                                    <i class="fab fa-line mr-1"></i>
+                                    \${customer.line_display_name || 'LINE名なし'}
+                                </p>
+                                \${customer.last_visit_at ? \`
+                                    <p class="text-xs text-gray-500 mt-1">
+                                        <i class="fas fa-calendar mr-1"></i>
+                                        最終来店: \${new Date(customer.last_visit_at * 1000).toLocaleDateString('ja-JP')}
+                                    </p>
+                                \` : ''}
+                            </div>
+                            <i class="fas fa-chevron-right text-gray-500"></i>
+                        </div>
+                    </a>
+                \`).join('');
+            }
+
+            // 検索機能
+            document.getElementById('search-input').addEventListener('input', (e) => {
+                const searchTerm = e.target.value.toLowerCase();
+                const filtered = allCustomers.filter(customer => {
+                    const callName = (customer.call_name || '').toLowerCase();
+                    const lineName = (customer.line_display_name || '').toLowerCase();
+                    return callName.includes(searchTerm) || lineName.includes(searchTerm);
+                });
+                displayCustomers(filtered);
+            });
+
+            // ログアウト
             document.getElementById('logout-btn').addEventListener('click', async () => {
                 try {
                     await axios.post('/api/auth/logout');
@@ -1122,8 +1106,9 @@ app.get('/dashboard', (c) => {
                     console.error('Logout error:', error);
                 }
             });
-            
-            loadUserInfo();
+
+            // 初期ロード
+            loadCustomers();
         </script>
     </body>
     </html>
